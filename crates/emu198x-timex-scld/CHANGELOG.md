@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/emu198x/timex-scld/compare/emu198x-timex-scld-v0.2.0...emu198x-timex-scld-v0.2.1) - 2026-11-03
+
+### Fixed
+
+- report selected Timex frame timing and correct video modes
+
 ## 0.2.0
 
 ### Fixed
