@@ -3,30 +3,49 @@ use emu198x_bus_sinclair_zx_spectrum::Ula;
 use emu198x_bus_sinclair_zx_spectrum::timing::{self, FrameTiming};
 use emu198x_sinclair_zx_spectrum_ula::{self as ula_engine, DELAY_TABLE_48K, UlaEngine};
 
-/// Timex SCLD — Semi-Custom Logic Device.
+/// Native TS2068 frame metadata, shared with the machine/runtime wiring.
+/// TS2068 Technical Manual §2.1.8.2/3: 14.112 MHz crystal and 262 lines.
+pub const TIMING_TS2068: FrameTiming = FrameTiming {
+    master_hz: 14_112_000,
+    cpu_divisor: 4,
+    tstates_per_line: 224,
+    halfcycles_per_line: 224 * 4,
+    lines_per_frame: 262,
+    halfcycles_per_frame: 224 * 4 * 262,
+    tstates_per_frame: 224 * 262,
+    first_border_line: 8,
+    first_screen_line: 35,
+    last_screen_line: 227,
+    last_border_line: 254,
+    first_screen_tstate: 24,
+    screen_pixels_per_line: 256,
+    left_border_tstate: 0,
+    right_border_tstate: 176,
+    contention_start_tstate: 14_336,
+    contention_pattern: [6, 5, 4, 3, 2, 1, 0, 0],
+    contention_phase: 0,
+    contention_tstates_per_line: 128,
+    interrupt_start_tstate: 0,
+    interrupt_length_tstates: 32,
+};
+
+/// Timex SCLD — Semi-Custom Logic Device of the TC2048, TC2068 and TS2068.
 ///
-/// Used in the TC2048, TC2068, and TS2068. Same contention model as the
-/// Ferranti 6C001E (48K pattern) but adds 8 video modes and full I/O decoding.
+/// Port $FF bits 0-2 select the video mode, bits 3-5 select mode-6 ink,
+/// bit 6 disables interrupts and bit 7 selects the external memory source
+/// interpreted by the owning machine. Documented video encodings are:
 ///
-/// Port $FF (SCLD control register):
-///   Bits 0-2: Video mode (0-7)
-///   Bit 3:    Hi-res ink colour bit 0
-///   Bit 4:    Hi-res ink colour bit 1
-///   Bit 5:    Hi-res ink colour bit 2
-///   Bit 6:    Interrupt disable (1 = disable)
+/// - 0: primary 256×192 bitmap with 8×8 attributes.
+/// - 1: secondary 256×192 bitmap with 8×8 attributes.
+/// - 2: primary bitmap with a separate attribute for each 8×1 cell.
+/// - 6: 512×192, alternating primary/secondary eight-pixel columns, with
+///   complementary ink/paper, bright/flash off and border fixed to paper.
 ///
-/// Video modes:
-///   0: Standard Spectrum display (256×192, 8×8 attributes)
-///   1: Dual-screen (alternates screen 0 and screen 1)
-///   2: Hi-colour (8×1 attribute cells instead of 8×8)
-///   3: Hi-colour + dual-screen
-///   4: Hi-res monochrome (512×192)
-///   5: Hi-res + dual-screen
-///   6: Hi-res + hi-colour
-///   7: Hi-res + hi-colour + dual-screen
-///
-/// Currently only Mode 0 is rendered. The mode register is stored for
-/// future implementation of the extended video modes.
+/// Encodings 3, 4, 5 and 7 are reserved in the manufacturer mode table.
+/// Their existing bit-decoder output is unqualified compatibility behaviour,
+/// not evidence of four additional documented hardware modes. Source:
+/// TS2068 Technical Manual Table 3.2.2-1 and §5.2.3 in the shared reference
+/// library. The shared ULA engine renders the documented modes.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TimexScld {
     engine: UlaEngine,
@@ -197,7 +216,11 @@ impl Ula for TimexScld {
     }
 
     fn frame_timing(&self) -> &FrameTiming {
-        &timing::TIMING_48K
+        if self.engine.config().lines_per_frame == ula_engine::CONFIG_TS2068.lines_per_frame {
+            &TIMING_TS2068
+        } else {
+            &timing::TIMING_48K
+        }
     }
 
     fn end_frame(&mut self) {
@@ -208,6 +231,45 @@ impl Ula for TimexScld {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_timing_metadata_matches_the_observed_counter_period() {
+        for config in [&ula_engine::CONFIG_TIMEX_PAL, &ula_engine::CONFIG_TS2068] {
+            let mut scld = TimexScld::with_config(config);
+            let mut framebuffer = vec![0; timing::SCREEN_WIDTH_HIRES * timing::SCREEN_HEIGHT];
+            let mut period = None;
+            for ticks in 1..=448 * 313 {
+                scld.tick(&ContendedMemory, 0, false, false, false, &mut framebuffer);
+                if scld.engine.pixel == 0 && scld.engine.scan == 0 {
+                    period = Some(ticks);
+                    break;
+                }
+            }
+            let period = period.expect("bounded hardware counter cycle");
+            assert_eq!(
+                period,
+                usize::from(config.pixels_per_line) * usize::from(config.lines_per_frame)
+            );
+            assert_eq!(scld.frame_timing().halfcycles_per_frame, period as u32 * 2);
+            assert_eq!(
+                scld.frame_timing().lines_per_frame,
+                config.lines_per_frame as u32
+            );
+        }
+    }
+    #[test]
+    fn reattached_configuration_changes_metadata_without_resetting_the_register() {
+        let mut scld = TimexScld::new();
+        scld.write_ff(0x36);
+        assert_eq!(scld.frame_timing().master_hz, 14_000_000);
+        scld.reattach_config(&ula_engine::CONFIG_TS2068);
+        assert_eq!(scld.frame_timing().master_hz, 14_112_000);
+        assert_eq!(scld.frame_timing().halfcycles_per_frame, 224 * 4 * 262);
+        assert_eq!(scld.read_ff(), 0x36);
+        scld.reattach_config(&ula_engine::CONFIG_TIMEX_PAL);
+        assert_eq!(scld.frame_timing().halfcycles_per_frame, 224 * 4 * 312);
+        assert_eq!(scld.read_ff(), 0x36);
+    }
 
     /// A read of `$FE` returns bits 7 and 5 as 0 (TS2068 Technical
     /// Manual §2.1.13.2), with the keyboard in bits 0-4 and the EAR bit
