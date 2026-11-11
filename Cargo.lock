@@ -10,9 +10,9 @@ checksum = "47655193f66d0286491d3f3d8e7155c1e3c01451d3b924aae70bbea5896c3af5"
 
 [[package]]
 name = "emu198x-sinclair-zx-spectrum-ula"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eed635aa352bdaf1983393d6c809f19cb7ab04b9a5626b1f8519cae141cefe84"
+checksum = "b9a72b3980ba7a0b08f175b9a4affddbd2d7b5d9627fe757236139da59813f89"
 dependencies = [
  "emu198x-bus-sinclair-zx-spectrum",
  "serde",
